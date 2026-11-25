@@ -1,0 +1,901 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>4D полихоры — 16, тессеракт, 24, 120, 600 + подсветка ячеек</title>
+<style>
+  body { margin: 0; overflow: hidden; background: #05060a; font-family: sans-serif; }
+  canvas { display: block; }
+  #info {
+    position: absolute; top: 12px; left: 12px; color: #cfd8ff;
+    font-size: 13px; line-height: 1.6; pointer-events: none;
+    text-shadow: 0 0 6px #000;
+  }
+  #info b { color: #ff7b9c; }
+  #info .num { color: #7fb8ff; font-weight: bold; }
+  #controls {
+    position: absolute; bottom: 12px; left: 12px; color: #cfd8ff;
+    font-size: 12px; display: flex; flex-direction: column; gap: 6px;
+    background: rgba(5,6,10,0.7); padding: 10px 14px; border-radius: 8px;
+  }
+  #controls label { display: flex; align-items: center; gap: 8px; }
+  input[type=range] { width: 150px; }
+  select { background: #0b0e18; color: #cfd8ff; border: 1px solid #334; border-radius: 4px; padding: 2px 6px; }
+  #legend {
+    position: absolute; top: 12px; right: 12px; color: #cfd8ff;
+    font-size: 12px; line-height: 1.7; text-align: right;
+    text-shadow: 0 0 6px #000;
+  }
+  #legend .swatch {
+    display: inline-block; width: 10px; height: 10px;
+    border-radius: 2px; margin-right: 6px; vertical-align: middle;
+  }
+  #hint {
+    position: absolute; bottom: 12px; right: 12px; color: #8ea0c8;
+    font-size: 12px; text-align: right; text-shadow: 0 0 6px #000;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+
+<div id="info">
+  <b id="title">4D полихор</b> <span id="schlafli"></span><br>
+  Вершин: <span class="num" id="vcount">…</span> ·
+  Рёбер: <span class="num" id="ecount">…</span> ·
+  Граней: <span class="num" id="fcount">…</span> ·
+  Ячеек: <span class="num" id="ccount">…</span><br>
+  <span id="cellInfo">клик по вершине — подсветить ячейку</span>
+</div>
+
+<div id="legend">
+  <div><span class="swatch" style="background:#ff5f8f"></span>вершины</div>
+  <div><span class="swatch" style="background:#7fb8ff"></span>рёбра</div>
+  <div><span class="swatch" id="faceSwatch" style="background:#ffb347"></span>грани</div>
+  <div><span class="swatch" style="background:#57e0a0"></span>ячейки (разные цвета)</div>
+</div>
+
+<div id="hint">клик — подсветить ячейку · повторный клик — снять</div>
+
+<div id="controls">
+  <label>Фигура
+    <select id="shapeSelect">
+      <option value="cell16">16-ячейник {3,3,4}</option>
+      <option value="tesseract">Тессеракт {4,3,3}</option>
+      <option value="cell24">24-ячейник {3,4,3}</option>
+      <option value="cell120">120-ячейник {5,3,3}</option>
+      <option value="cell600">600-ячейник {3,3,5}</option>
+    </select>
+  </label>
+  <label>Скорость 4D
+    <input id="speed" type="range" min="0" max="100" value="25">
+  </label>
+  <label>Проекция (w)
+    <input id="dist" type="range" min="15" max="80" value="30">
+  </label>
+  <label>Яркость ячеек
+    <input id="cellAlpha" type="range" min="0" max="100" value="70">
+  </label>
+  <label><input id="showCells" type="checkbox" checked> ячейки</label>
+  <label><input id="showFaces" type="checkbox" checked> грани</label>
+  <label><input id="showEdges" type="checkbox" checked> рёбра</label>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ============================================================
+// 1. ВЕРШИНЫ, РЁБРА, ГРАНИ, ЯЧЕЙКИ
+// ============================================================
+
+const shapes = {};
+
+// ---------- 16-ЯЧЕЙНИК {3,3,4} ----------
+{
+  const verts = [];
+  for (let axis = 0; axis < 4; axis++) {
+    for (let sign = -1; sign <= 1; sign += 2) {
+      const v = [0, 0, 0, 0];
+      v[axis] = sign;
+      verts.push(v);
+    }
+  }
+  const n = verts.length;
+  const edges = [];
+  const edgeSet = new Set();
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      let dot = 0;
+      for (let k = 0; k < 4; k++) dot += verts[i][k] * verts[j][k];
+      if (dot === -1) continue;
+      edges.push([i, j]);
+      edgeSet.add(`${i},${j}`);
+    }
+  }
+  const hasEdge = (a, b) => edgeSet.has(a < b ? `${a},${b}` : `${b},${a}`);
+
+  const faces = [];
+  const faceSet = new Set();
+  for (let a = 0; a < n; a++) {
+    for (let b = a + 1; b < n; b++) {
+      if (!hasEdge(a, b)) continue;
+      for (let c = b + 1; c < n; c++) {
+        if (hasEdge(a, c) && hasEdge(b, c)) {
+          const key = [a, b, c].join(',');
+          if (!faceSet.has(key)) { faceSet.add(key); faces.push([a, b, c]); }
+        }
+      }
+    }
+  }
+
+  const cells = [];
+  const cellKeySet = new Set();
+  for (let a = 0; a < n; a++) {
+    for (let b = a + 1; b < n; b++) {
+      if (!hasEdge(a, b)) continue;
+      for (let c = b + 1; c < n; c++) {
+        if (!hasEdge(a, c) || !hasEdge(b, c)) continue;
+        for (let d = c + 1; d < n; d++) {
+          if (hasEdge(a, d) && hasEdge(b, d) && hasEdge(c, d)) {
+            const key = [a, b, c, d].join(',');
+            if (!cellKeySet.has(key)) { cellKeySet.add(key); cells.push([a, b, c, d]); }
+          }
+        }
+      }
+    }
+  }
+
+  shapes.cell16 = {
+    name: '16-ячейник', schlafli: '{3,3,4}',
+    verts, edges, faces, cells, scale: 1.8, faceColor: 0xffb347
+  };
+}
+
+// ---------- ТЕССЕРАКТ {4,3,3} ----------
+{
+  const verts = [];
+  for (let i = 0; i < 16; i++) {
+    verts.push([
+      (i & 1) ? 1 : -1, (i & 2) ? 1 : -1,
+      (i & 4) ? 1 : -1, (i & 8) ? 1 : -1
+    ]);
+  }
+  const edges = [];
+  for (let i = 0; i < 16; i++)
+    for (let j = i + 1; j < 16; j++) {
+      let diff = 0;
+      for (let k = 0; k < 4; k++) if (verts[i][k] !== verts[j][k]) diff++;
+      if (diff === 1) edges.push([i, j]);
+    }
+
+  const faces = [];
+  const faceSet = new Set();
+  const key4 = (a, b, c, d) => [a, b, c, d].sort((x, y) => x - y).join(',');
+  for (let i = 0; i < 16; i++) {
+    for (let j = i + 1; j < 16; j++) {
+      const diffIdx = [];
+      for (let k = 0; k < 4; k++) if (verts[i][k] !== verts[j][k]) diffIdx.push(k);
+      if (diffIdx.length !== 1) continue;
+      const d1 = diffIdx[0];
+      for (let k = 0; k < 16; k++) {
+        if (k === i || k === j) continue;
+        const diff2 = [];
+        for (let m = 0; m < 4; m++) if (verts[i][m] !== verts[k][m]) diff2.push(m);
+        if (diff2.length !== 1 || diff2[0] === d1) continue;
+        const d2 = diff2[0];
+        const p4 = [verts[i][0], verts[i][1], verts[i][2], verts[i][3]];
+        p4[d1] = verts[k][d1];
+        p4[d2] = verts[i][d2];
+        let found = -1;
+        for (let m = 0; m < 16; m++) {
+          let ok = true;
+          for (let q = 0; q < 4; q++) if (verts[m][q] !== p4[q]) { ok = false; break; }
+          if (ok) { found = m; break; }
+        }
+        if (found === -1) continue;
+        const sk = key4(i, j, k, found);
+        if (!faceSet.has(sk)) { faceSet.add(sk); faces.push([i, j, found, k]); }
+      }
+    }
+  }
+
+  const cells = [];
+  for (let fixAxis = 0; fixAxis < 4; fixAxis++) {
+    for (let sign = -1; sign <= 1; sign += 2) {
+      const cell = [];
+      for (let i = 0; i < 16; i++) if (verts[i][fixAxis] === sign) cell.push(i);
+      cells.push(cell);
+    }
+  }
+
+  shapes.tesseract = {
+    name: 'Тессеракт', schlafli: '{4,3,3}',
+    verts, edges, faces, cells, scale: 1.8, faceColor: 0xffb347
+  };
+}
+
+// ---------- 24-ЯЧЕЙНИК {3,4,3} ----------
+{
+  const raw = [];
+  for (let i = 0; i < 4; i++) {
+    for (let j = 0; j < 4; j++) {
+      if (i === j) continue;
+      for (let si = -1; si <= 1; si += 2)
+        for (let sj = -1; sj <= 1; sj += 2) {
+          const v = [0, 0, 0, 0];
+          v[i] = si; v[j] = sj;
+          raw.push(v);
+        }
+    }
+  }
+  const verts = [];
+  const seen = new Set();
+  for (const v of raw) {
+    const k = v.join(',');
+    if (!seen.has(k)) { seen.add(k); verts.push(v); }
+  }
+  const n = verts.length;
+
+  const edges = [];
+  const edgeSet = new Set();
+  for (let i = 0; i < n; i++)
+    for (let j = i + 1; j < n; j++) {
+      let d2 = 0;
+      for (let k = 0; k < 4; k++) { const d = verts[i][k] - verts[j][k]; d2 += d * d; }
+      if (Math.abs(d2 - 2) < 1e-6) { edges.push([i, j]); edgeSet.add(`${i},${j}`); }
+    }
+  const hasEdge = (a, b) => edgeSet.has(a < b ? `${a},${b}` : `${b},${a}`);
+
+  const faces = [];
+  const faceSet = new Set();
+  for (let a = 0; a < n; a++)
+    for (let b = a + 1; b < n; b++) {
+      if (!hasEdge(a, b)) continue;
+      for (let c = b + 1; c < n; c++)
+        if (hasEdge(a, c) && hasEdge(b, c)) {
+          const key = [a, b, c].join(',');
+          if (!faceSet.has(key)) { faceSet.add(key); faces.push([a, b, c]); }
+        }
+    }
+
+  function combinations(arr, k) {
+    const res = [], cur = [];
+    (function rec(start) {
+      if (cur.length === k) { res.push([...cur]); return; }
+      for (let i = start; i < arr.length; i++) { cur.push(arr[i]); rec(i + 1); cur.pop(); }
+    })(0);
+    return res;
+  }
+
+  const cells = [];
+  const cellKeySet = new Set();
+  const allIdx = Array.from({ length: n }, (_, i) => i);
+  for (const combo of combinations(allIdx, 6)) {
+    let ok = true;
+    for (const v of combo) {
+      let deg = 0;
+      for (const u of combo) if (u !== v && hasEdge(v, u)) deg++;
+      if (deg !== 4) { ok = false; break; }
+    }
+    if (!ok) continue;
+    let ecount = 0;
+    for (let i = 0; i < 6; i++)
+      for (let j = i + 1; j < 6; j++) if (hasEdge(combo[i], combo[j])) ecount++;
+    if (ecount !== 12) continue;
+    const key = combo.join(',');
+    if (!cellKeySet.has(key)) { cellKeySet.add(key); cells.push(combo); }
+  }
+
+  shapes.cell24 = {
+    name: '24-ячейник', schlafli: '{3,4,3}',
+    verts, edges, faces, cells, scale: 1.6, faceColor: 0xffb347
+  };
+}
+
+// ---------- 120-ЯЧЕЙНИК {5,3,3} ----------
+{
+  const PHI = (1 + Math.sqrt(5)) / 2;
+  const IPHI = 1 / PHI, IPHI2 = IPHI * IPHI, PHI2 = PHI * PHI;
+  const SQRT5 = Math.sqrt(5);
+
+  const verts4D = [];
+  const seen = new Set();
+  const keyOf = v => v.map(x => x.toFixed(6)).join(',');
+  function addVertex(v) {
+    const k = keyOf(v);
+    if (!seen.has(k)) { seen.add(k); verts4D.push(v); }
+  }
+  function allPermutations(arr) {
+    const res = [], n = arr.length, used = new Array(n).fill(false), cur = new Array(n);
+    (function rec(d) {
+      if (d === n) { res.push([...cur]); return; }
+      for (let i = 0; i < n; i++) {
+        if (used[i]) continue;
+        used[i] = true; cur[d] = arr[i]; rec(d + 1); used[i] = false;
+      }
+    })(0);
+    const u = new Map();
+    for (const p of res) u.set(p.join(','), p);
+    return [...u.values()];
+  }
+  function evenPermutations(arr) {
+    return allPermutations(arr).filter(p => {
+      let inv = 0;
+      for (let i = 0; i < p.length; i++)
+        for (let j = i + 1; j < p.length; j++) if (p[i] > p[j]) inv++;
+      return inv % 2 === 0;
+    });
+  }
+  function signChanges(v) {
+    const res = [], n = v.length;
+    for (let m = 0; m < (1 << n); m++) {
+      const out = new Array(n);
+      for (let i = 0; i < n; i++) out[i] = v[i] * (((m >> i) & 1) ? -1 : 1);
+      res.push(out);
+    }
+    return res;
+  }
+
+  for (const p of allPermutations([0, 0, 2, 2])) for (const v of signChanges(p)) addVertex(v);
+  for (const p of allPermutations([1, 1, 1, SQRT5])) for (const v of signChanges(p)) addVertex(v);
+  for (const p of allPermutations([IPHI2, PHI, PHI, PHI])) for (const v of signChanges(p)) addVertex(v);
+  for (const p of allPermutations([IPHI, IPHI, IPHI, PHI2])) for (const v of signChanges(p)) addVertex(v);
+  for (const p of evenPermutations([0, IPHI2, 1, PHI2])) for (const v of signChanges(p)) addVertex(v);
+  for (const p of evenPermutations([0, IPHI, PHI, SQRT5])) for (const v of signChanges(p)) addVertex(v);
+  for (const p of evenPermutations([IPHI, 1, PHI, 2])) for (const v of signChanges(p)) addVertex(v);
+
+  const n = verts4D.length;
+
+  let minD2 = Infinity;
+  for (let i = 0; i < n; i++)
+    for (let j = i + 1; j < n; j++) {
+      const a = verts4D[i], b = verts4D[j];
+      const dx = a[0]-b[0], dy = a[1]-b[1], dz = a[2]-b[2], dw = a[3]-b[3];
+      const d2 = dx*dx + dy*dy + dz*dz + dw*dw;
+      if (d2 < minD2) minD2 = d2;
+    }
+  const edgeThr = minD2 * 1.0001;
+
+  const edges = [];
+  const adj = Array.from({ length: n }, () => []);
+  for (let i = 0; i < n; i++)
+    for (let j = i + 1; j < n; j++) {
+      const a = verts4D[i], b = verts4D[j];
+      const dx = a[0]-b[0], dy = a[1]-b[1], dz = a[2]-b[2], dw = a[3]-b[3];
+      const d2 = dx*dx + dy*dy + dz*dz + dw*dw;
+      if (d2 <= edgeThr) { edges.push([i, j]); adj[i].push(j); adj[j].push(i); }
+    }
+
+  const edgeSet = new Set();
+  for (const [a, b] of edges) edgeSet.add(a < b ? `${a},${b}` : `${b},${a}`);
+  const hasEdge = (a, b) => edgeSet.has(a < b ? `${a},${b}` : `${b},${a}`);
+
+  const faceSet = new Set();
+  const faces = [];
+  for (const [a, b] of edges)
+    for (const c of adj[b]) {
+      if (c === a || hasEdge(a, c)) continue;
+      for (const d of adj[c]) {
+        if (d === b || d === a || hasEdge(b, d) || hasEdge(a, d)) continue;
+        for (const e of adj[d]) {
+          if (e === c || e === b || e === a) continue;
+          if (!hasEdge(e, a) || hasEdge(c, e) || hasEdge(b, e) || hasEdge(d, a)) continue;
+          const cyc = [a, b, c, d, e];
+          const sk = [...cyc].sort((x, y) => x - y).join(',');
+          if (!faceSet.has(sk)) { faceSet.add(sk); faces.push(cyc); }
+        }
+      }
+    }
+
+  const cells = [];
+  const cellKeySet = new Set();
+  for (let v0 = 0; v0 < n; v0++) {
+    const neighbors = adj[v0];
+    if (neighbors.length !== 4) continue;
+    for (let drop = 0; drop < 4; drop++) {
+      const start = new Set([v0]);
+      for (let k = 0; k < 4; k++) if (k !== drop) start.add(neighbors[k]);
+      let changed = true;
+      while (changed && start.size <= 20) {
+        changed = false;
+        for (let u = 0; u < n; u++) {
+          if (start.has(u)) continue;
+          let cnt = 0;
+          for (const w of adj[u]) if (start.has(w)) cnt++;
+          if (cnt >= 3) { start.add(u); changed = true; if (start.size > 20) break; }
+        }
+        if (start.size > 20) break;
+      }
+      if (start.size === 20) {
+        let ok = true;
+        for (const u of start) {
+          let cnt = 0;
+          for (const w of adj[u]) if (start.has(w)) cnt++;
+          if (cnt !== 3) { ok = false; break; }
+        }
+        if (ok) {
+          const arr = [...start].sort((a, b) => a - b);
+          const key = arr.join(',');
+          if (!cellKeySet.has(key)) { cellKeySet.add(key); cells.push(arr); }
+        }
+      }
+    }
+  }
+
+  shapes.cell120 = {
+    name: '120-ячейник', schlafli: '{5,3,3}',
+    verts: verts4D, edges, faces, cells, scale: 1.2, faceColor: 0x57e0a0
+  };
+}
+
+// ---------- 600-ЯЧЕЙНИК {3,3,5} ----------
+{
+  const PHI = (1 + Math.sqrt(5)) / 2;
+  const IPHI = 1 / PHI;
+
+  const verts4D = [];
+  const seen = new Set();
+  const keyOf = v => v.map(x => x.toFixed(8)).join(',');
+  function addVertex(v) {
+    const k = keyOf(v);
+    if (!seen.has(k)) { seen.add(k); verts4D.push(v); }
+  }
+
+  for (let m = 0; m < 16; m++) {
+    addVertex([
+      ((m >> 0) & 1) ? 0.5 : -0.5,
+      ((m >> 1) & 1) ? 0.5 : -0.5,
+      ((m >> 2) & 1) ? 0.5 : -0.5,
+      ((m >> 3) & 1) ? 0.5 : -0.5
+    ]);
+  }
+  for (let axis = 0; axis < 4; axis++)
+    for (let sign = -1; sign <= 1; sign += 2) {
+      const v = [0, 0, 0, 0];
+      v[axis] = sign;
+      addVertex(v);
+    }
+
+  const base = [PHI / 2, 0.5, IPHI / 2, 0];
+  function permutations(arr) {
+    const res = [];
+    (function rec(cur, remaining) {
+      if (remaining.length === 0) { res.push([...cur]); return; }
+      for (let i = 0; i < remaining.length; i++) {
+        cur.push(remaining[i]);
+        rec(cur, [...remaining.slice(0, i), ...remaining.slice(i + 1)]);
+        cur.pop();
+      }
+    })([], arr);
+    const u = new Map();
+    for (const p of res) u.set(p.map(x => x.toFixed(8)).join(','), p);
+    return [...u.values()];
+  }
+  function isEvenPerm(perm) {
+    const idx = perm.map(v => base.indexOf(v));
+    let inv = 0;
+    for (let i = 0; i < idx.length; i++)
+      for (let j = i + 1; j < idx.length; j++) if (idx[i] > idx[j]) inv++;
+    return inv % 2 === 0;
+  }
+
+  const perms = permutations([...base]);
+  for (const p of perms) {
+    if (!isEvenPerm(p)) continue;
+    for (let s = 0; s < 8; s++) {
+      addVertex([
+        ((s >> 0) & 1) ? -p[0] : p[0],
+        ((s >> 1) & 1) ? -p[1] : p[1],
+        ((s >> 2) & 1) ? -p[2] : p[2],
+        p[3]
+      ]);
+    }
+  }
+
+  const n = verts4D.length;
+
+  let minD2 = Infinity;
+  for (let i = 0; i < n; i++)
+    for (let j = i + 1; j < n; j++) {
+      const a = verts4D[i], b = verts4D[j];
+      let d2 = 0;
+      for (let k = 0; k < 4; k++) { const d = a[k]-b[k]; d2 += d*d; }
+      if (d2 < minD2) minD2 = d2;
+    }
+  const edgeThr = minD2 * 1.0001;
+
+  const edges = [];
+  const edgeSet = new Set();
+  for (let i = 0; i < n; i++)
+    for (let j = i + 1; j < n; j++) {
+      const a = verts4D[i], b = verts4D[j];
+      let d2 = 0;
+      for (let k = 0; k < 4; k++) { const d = a[k]-b[k]; d2 += d*d; }
+      if (d2 <= edgeThr) { edges.push([i, j]); edgeSet.add(`${i},${j}`); }
+    }
+  const hasEdge = (a, b) => edgeSet.has(a < b ? `${a},${b}` : `${b},${a}`);
+
+  const faces = [];
+  const faceSet = new Set();
+  for (let a = 0; a < n; a++)
+    for (let b = a + 1; b < n; b++) {
+      if (!hasEdge(a, b)) continue;
+      for (let c = b + 1; c < n; c++)
+        if (hasEdge(a, c) && hasEdge(b, c)) {
+          const key = [a, b, c].join(',');
+          if (!faceSet.has(key)) { faceSet.add(key); faces.push([a, b, c]); }
+        }
+    }
+
+  const cells = [];
+  const cellKeySet = new Set();
+  for (let a = 0; a < n; a++)
+    for (let b = a + 1; b < n; b++) {
+      if (!hasEdge(a, b)) continue;
+      for (let c = b + 1; c < n; c++) {
+        if (!hasEdge(a, c) || !hasEdge(b, c)) continue;
+        for (let d = c + 1; d < n; d++) {
+          if (hasEdge(a, d) && hasEdge(b, d) && hasEdge(c, d)) {
+            const key = [a, b, c, d].join(',');
+            if (!cellKeySet.has(key)) { cellKeySet.add(key); cells.push([a, b, c, d]); }
+          }
+        }
+      }
+    }
+
+  shapes.cell600 = {
+    name: '600-ячейник', schlafli: '{3,3,5}',
+    verts: verts4D, edges, faces, cells, scale: 1.8, faceColor: 0x7fb8ff
+  };
+}
+
+// ============================================================
+// 2. СЦЕНА
+// ============================================================
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x05060a, 0.012);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 1000);
+camera.position.set(0, 0, 12);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.4;
+
+let pointsObj = null;
+let lineSegments = null;
+let faceMesh = null;
+let cellLines = [];   // массив LineSegments по ячейкам
+
+let currentShape = null;
+let projected = null;
+let faceTriangles = [];
+let cellEdgeGroups = []; // [{cellIdx, edges:[[v,u],...]}]
+
+let currentScale = 1.5;
+
+// подсветка
+let hoveredCellIdx = -1;
+const raycaster = new THREE.Raycaster();
+const mouseNDC = new THREE.Vector2();
+const POINT_PICK_THRESHOLD = 0.06;
+
+// HSV цвет для ячейки
+function cellColor(idx, total) {
+  const h = (idx / Math.max(1, total));
+  const c = new THREE.Color();
+  c.setHSL(h, 0.75, 0.55);
+  return c;
+}
+
+// ============================================================
+// 3. ПОСТРОЕНИЕ ОБЪЕКТОВ
+// ============================================================
+function rebuild(shapeKey) {
+  if (pointsObj) scene.remove(pointsObj);
+  if (lineSegments) scene.remove(lineSegments);
+  if (faceMesh) scene.remove(faceMesh);
+  for (const cl of cellLines) {
+    scene.remove(cl);
+    cl.geometry.dispose();
+    cl.material.dispose();
+  }
+  pointsObj?.geometry.dispose();
+  lineSegments?.geometry.dispose();
+  faceMesh?.geometry.dispose();
+  cellLines = [];
+
+  const shape = shapes[shapeKey];
+  currentShape = shape;
+  hoveredCellIdx = -1;
+
+  const { verts, edges, faces, cells, scale, faceColor } = shape;
+  const n = verts.length;
+
+  document.getElementById('title').textContent = shape.name;
+  document.getElementById('schlafli').textContent = shape.schlafli;
+  document.getElementById('vcount').textContent = n;
+  document.getElementById('ecount').textContent = edges.length;
+  document.getElementById('fcount').textContent = faces.length;
+  document.getElementById('ccount').textContent = cells.length;
+  document.getElementById('faceSwatch').style.background =
+    '#' + faceColor.toString(16).padStart(6, '0');
+  document.getElementById('cellInfo').textContent = 'клик по вершине — подсветить ячейку';
+
+  const isDense = shapeKey === 'cell120' || shapeKey === 'cell600';
+
+  const pointGeo = new THREE.BufferGeometry();
+  pointGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+  pointsObj = new THREE.Points(pointGeo, new THREE.PointsMaterial({
+    color: 0xff5f8f, size: isDense ? 0.025 : 0.045,
+    transparent: true, opacity: 0.8
+  }));
+  scene.add(pointsObj);
+
+  const lineGeo = new THREE.BufferGeometry();
+  lineGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(edges.length * 6), 3));
+  lineSegments = new THREE.LineSegments(lineGeo, new THREE.LineBasicMaterial({
+    color: 0x7fb8ff, transparent: true, opacity: 0.15
+  }));
+  scene.add(lineSegments);
+
+  faceTriangles = [];
+  for (const f of faces) {
+    if (f.length === 3) faceTriangles.push([f[0], f[1], f[2]]);
+    else if (f.length === 4) {
+      faceTriangles.push([f[0], f[1], f[2]]);
+      faceTriangles.push([f[0], f[2], f[3]]);
+    } else if (f.length === 5) {
+      faceTriangles.push([f[0], f[1], f[2]]);
+      faceTriangles.push([f[0], f[2], f[3]]);
+      faceTriangles.push([f[0], f[3], f[4]]);
+    }
+  }
+  const faceGeo = new THREE.BufferGeometry();
+  faceGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(faceTriangles.length * 9), 3));
+  faceMesh = new THREE.Mesh(faceGeo, new THREE.MeshBasicMaterial({
+    color: faceColor, transparent: true, opacity: 0.08,
+    side: THREE.DoubleSide, depthWrite: false,
+    blending: THREE.AdditiveBlending
+  }));
+  scene.add(faceMesh);
+
+  // рёбра ячеек — по группам
+  const edgeLookup = new Set(edges.map(([a, b]) => a < b ? `${a},${b}` : `${b},${a}`));
+  cellEdgeGroups = [];
+
+  for (let ci = 0; ci < cells.length; ci++) {
+    const cell = cells[ci];
+    const groupEdges = [];
+    for (const v of cell) {
+      for (const u of cell) {
+        if (u <= v) continue;
+        const k = `${v},${u}`;
+        if (edgeLookup.has(k)) groupEdges.push([v, u]);
+      }
+    }
+    cellEdgeGroups.push({ cellIdx: ci, edges: groupEdges });
+
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(groupEdges.length * 6), 3));
+    const col = cellColor(ci, cells.length);
+    const mat = new THREE.LineBasicMaterial({
+      color: col, transparent: true, opacity: 0.7
+    });
+    const cl = new THREE.LineSegments(g, mat);
+    cl.userData.cellIdx = ci;
+    scene.add(cl);
+    cellLines.push(cl);
+  }
+
+  projected = new Array(n);
+  currentScale = scale;
+}
+
+// ============================================================
+// 4. 4D-ВРАЩЕНИЕ И ПРОЕКЦИЯ
+// ============================================================
+let angleXW = 0, angleYZ = 0;
+
+const speedEl = document.getElementById('speed');
+const distEl = document.getElementById('dist');
+const cellAlphaEl = document.getElementById('cellAlpha');
+const showCellsEl = document.getElementById('showCells');
+const showFacesEl = document.getElementById('showFaces');
+const showEdgesEl = document.getElementById('showEdges');
+const shapeSelect = document.getElementById('shapeSelect');
+
+function rotate4D(v, a, b) {
+  const [x, y, z, w] = v;
+  const c1 = Math.cos(a), s1 = Math.sin(a);
+  const x1 = c1 * x - s1 * w, w1 = s1 * x + c1 * w;
+  const c2 = Math.cos(b), s2 = Math.sin(b);
+  const y1 = c2 * y - s2 * z, z1 = s2 * y + c2 * z;
+  return [x1, y1, z1, w1];
+}
+function project(v, d) {
+  const k = d / (d - v[3] + 1e-6);
+  return [v[0] * k, v[1] * k, v[2] * k];
+}
+
+// ============================================================
+// 5. КЛИК: ПОДСВЕТКА ЯЧЕЙКИ
+// ============================================================
+let pointerDownPos = null;
+
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  pointerDownPos = { x: e.clientX, y: e.clientY };
+});
+
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (!pointerDownPos) return;
+  const dx = e.clientX - pointerDownPos.x;
+  const dy = e.clientY - pointerDownPos.y;
+  pointerDownPos = null;
+  if (dx * dx + dy * dy > 25) return; // это было перетаскивание
+
+  if (!pointsObj || !currentShape) return;
+
+  mouseNDC.x = (e.clientX / innerWidth) * 2 - 1;
+  mouseNDC.y = -(e.clientY / innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouseNDC, camera);
+  raycaster.params.Points.threshold = POINT_PICK_THRESHOLD;
+
+  const hits = raycaster.intersectObject(pointsObj, false);
+  if (hits.length === 0) {
+    hoveredCellIdx = -1;
+    applyHighlight();
+    return;
+  }
+
+  const vIdx = hits[0].index;
+  // ищем ячейку, содержащую эту вершину
+  const cells = currentShape.cells;
+  let found = -1;
+  for (let ci = 0; ci < cells.length; ci++) {
+    if (cells[ci].includes(vIdx)) { found = ci; break; }
+  }
+  if (found === hoveredCellIdx) hoveredCellIdx = -1;
+  else hoveredCellIdx = found;
+
+  applyHighlight();
+  updateCellInfo();
+});
+
+function updateCellInfo() {
+  const el = document.getElementById('cellInfo');
+  if (hoveredCellIdx < 0) {
+    el.textContent = 'клик по вершине — подсветить ячейку';
+  } else {
+    const cells = currentShape.cells;
+    el.textContent = `ячейка #${hoveredCellIdx + 1} из ${cells.length} · вершин: ${cells[hoveredCellIdx].length}`;
+  }
+}
+
+function applyHighlight() {
+  for (const cl of cellLines) {
+    const ci = cl.userData.cellIdx;
+    const base = cellColor(ci, cellLines.length);
+    if (hoveredCellIdx < 0) {
+      cl.material.color.copy(base);
+      cl.material.opacity = 0.7;
+    } else if (ci === hoveredCellIdx) {
+      cl.material.color.set(0xffffff);
+      cl.material.opacity = 1.0;
+    } else {
+      cl.material.color.copy(base).multiplyScalar(0.25);
+      cl.material.opacity = 0.12;
+    }
+  }
+}
+
+// ============================================================
+// 6. АНИМАЦИЯ
+// ============================================================
+function update() {
+  if (!currentShape) { requestAnimationFrame(update); return; }
+
+  const spd = parseFloat(speedEl.value) / 100 * 0.02;
+  const dist = parseFloat(distEl.value) / 10;
+  const cA = parseFloat(cellAlphaEl.value) / 100;
+
+  angleXW += spd;
+  angleYZ += spd * 0.7;
+
+  const { verts, edges } = currentShape;
+  const n = verts.length;
+
+  for (let i = 0; i < n; i++) {
+    const r = rotate4D(verts[i], angleXW, angleYZ);
+    const p = project(r, dist);
+    p[0] *= currentScale; p[1] *= currentScale; p[2] *= currentScale;
+    projected[i] = p;
+  }
+
+  const pp = pointsObj.geometry.attributes.position.array;
+  for (let i = 0; i < n; i++) {
+    pp[i*3] = projected[i][0]; pp[i*3+1] = projected[i][1]; pp[i*3+2] = projected[i][2];
+  }
+  pointsObj.geometry.attributes.position.needsUpdate = true;
+
+  const lp = lineSegments.geometry.attributes.position.array;
+  for (let e = 0; e < edges.length; e++) {
+    const [i, j] = edges[e];
+    lp[e*6] = projected[i][0]; lp[e*6+1] = projected[i][1]; lp[e*6+2] = projected[i][2];
+    lp[e*6+3] = projected[j][0]; lp[e*6+4] = projected[j][1]; lp[e*6+5] = projected[j][2];
+  }
+  lineSegments.geometry.attributes.position.needsUpdate = true;
+
+  const fp = faceMesh.geometry.attributes.position.array;
+  for (let t = 0; t < faceTriangles.length; t++) {
+    const tri = faceTriangles[t];
+    for (let k = 0; k < 3; k++) {
+      const idx = tri[k], p = projected[idx];
+      fp[(t*3+k)*3] = p[0]; fp[(t*3+k)*3+1] = p[1]; fp[(t*3+k)*3+2] = p[2];
+    }
+  }
+  faceMesh.geometry.attributes.position.needsUpdate = true;
+  faceMesh.geometry.computeBoundingSphere();
+
+  // рёбра ячеек
+  for (let ci = 0; ci < cellLines.length; ci++) {
+    const cl = cellLines[ci];
+    const grp = cellEdgeGroups[ci];
+    const cp = cl.geometry.attributes.position.array;
+    for (let e = 0; e < grp.edges.length; e++) {
+      const [i, j] = grp.edges[e];
+      cp[e*6] = projected[i][0]; cp[e*6+1] = projected[i][1]; cp[e*6+2] = projected[i][2];
+      cp[e*6+3] = projected[j][0]; cp[e*6+4] = projected[j][1]; cp[e*6+5] = projected[j][2];
+    }
+    cl.geometry.attributes.position.needsUpdate = true;
+    cl.geometry.computeBoundingSphere();
+    cl.material.opacity = (hoveredCellIdx < 0)
+      ? cA
+      : (cl.userData.cellIdx === hoveredCellIdx ? Math.max(cA, 0.9) : cA * 0.18);
+  }
+
+  faceMesh.visible = showFacesEl.checked;
+  const showCells = showCellsEl.checked;
+  for (const cl of cellLines) cl.visible = showCells;
+  lineSegments.visible = showEdgesEl.checked;
+
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(update);
+}
+
+// ============================================================
+// 7. СТАРТ
+// ============================================================
+shapeSelect.addEventListener('change', () => {
+  rebuild(shapeSelect.value);
+});
+
+rebuild('cell16');
+update();
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
